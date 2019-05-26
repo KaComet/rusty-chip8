@@ -1,0 +1,8 @@
+[package]
+name = "rusty-chip8"
+version = "0.1.0"
+authors = ["Kacomet <Catfish5994.sbcglobal.net>"]
+edition = "2018"
+
+[dependencies]
+rand = "0.6.5"
