@@ -185,48 +185,48 @@ impl Chip8
     }
 
     ///! Returns the state of the pixel at the indicated row and column.
-    pub fn get_screen_pixel(&mut self, row: u8, col: u8) -> PixelState
+    pub fn get_screen_pixel(&mut self, row: u8, col: u8) -> Option<PixelState>
     {
         if (row  < 32) && (col < 64)
         {
             let pixel: u16 = (64 * row as u16) + col as u16;
             match self.screen[pixel as usize]
             {
-                PixelState::Lit   => PixelState::Lit,
-                PixelState::Unlit => PixelState::Unlit
+                PixelState::Lit   => Some(PixelState::Lit),
+                PixelState::Unlit => Some(PixelState::Unlit)
             }
         }
-        else 
+        else
         {
-            PixelState::Unlit
+            None
         }
     }
 
-    ///! Set the pixel to the desired state at the indicated row and column.
-    pub fn set_screen_pixel(&mut self, row: u8, col: u8, desired_state: PixelState)
+    ///! Set the pixel to the desired state at the indicated row and column. Returns true if good, false if else.
+    pub fn set_screen_pixel(&mut self, row: u8, col: u8, desired_state: PixelState) -> bool
     {
         if (row  < 32) && (col < 64)
         {
             self.screen[((64 * row as u16) + col as u16) as usize] = desired_state;
+            return true;
         }
 
-        return;
+        false
     }
 
-    ///! Sets the program counter to the indicated byte.
-    pub fn set_program_counter(&mut self, desired_pc_value: u16)
+    ///! Sets the program counter to the indicated byte. Returns true if the program counter was able to be set correctly, false if else.
+    pub fn set_program_counter(&mut self, desired_pc_value: u16) -> bool
     {
-        if desired_pc_value >= 4096
+        if desired_pc_value < 4096
         {
-            return
+            self.program_counter = desired_pc_value;
+            return true;
         }
 
-        self.program_counter = desired_pc_value;
-        
-        return;
+        false
     }
 
-    //Subtracts the indicated value from the delay counter.
+    ///! Subtracts the indicated value from the delay counter.
     pub fn subtract_from_delaycounter(&mut self, value_to_subtract: f32)
     {
         self.timer_delay -= value_to_subtract;
@@ -234,21 +234,22 @@ impl Chip8
         {
             self.timer_delay = 0.0;
         }
-
-        return
     }
 
-    pub fn subtract_from_buzzercounter(&mut self, value_to_subtract: f32)
+     ///! Subtracts the indicated value from the buzzer counter. Returns true if the buzzer counter has run out.
+    pub fn subtract_from_buzzercounter(&mut self, value_to_subtract: f32) -> bool
     {
         self.buzzer_delay -= value_to_subtract;
-        if self.buzzer_delay < 0.0
+        if self.buzzer_delay <= 0.0
         {
             self.buzzer_delay = 0.0;
+            return true;
         }
 
-        return
+        false
     }
 
+    // Loads the default font into 0x000.
     fn load_default_font(&mut self)
     {
         let font_set: [u8; 80] = 
