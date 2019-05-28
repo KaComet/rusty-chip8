@@ -1,12 +1,12 @@
 //! Interpreter for original chip-8 programs.
 
+//347kB
 extern crate rand;
 use rand::Rng;
 
 pub struct Chip8
 {
     device_state:       CpuState,
-    tick_delay:         u16,
     opcode:             u8,
     index:              u16,
     program_counter:    u16,
@@ -29,10 +29,9 @@ impl Default for Chip8
         Chip8
         {
             device_state:          CpuState::Ready,
-            tick_delay:         0,
             opcode:             0,
             index:              0,
-            program_counter:    0,
+            program_counter:    0x200,
             timer_delay:        0.0,
             buzzer_delay:       0.0,
             stack_pointer:      0,
@@ -47,6 +46,7 @@ impl Default for Chip8
     }
 }
 
+///! Used to set the state of the Chip-8's keyboard
 #[derive(PartialEq)]
 #[derive(Clone, Copy)]
 #[derive(Debug)]
@@ -56,6 +56,7 @@ pub enum KeyState
     Unpressed
 }
 
+///! Used to indicate the state of a pixel on the Chip-8's screen.
 #[derive(PartialEq)]
 #[derive(Clone, Copy)]
 pub enum PixelState
@@ -66,10 +67,19 @@ pub enum PixelState
 
 #[derive(PartialEq)]
 #[derive(Clone, Copy)]
-pub enum CpuState
+enum CpuState
 {
     Ready,
     WaitingForKeypress
+}
+
+// pc_Increment is used to indicate what the next program counter value needs to be.
+#[derive(Clone, Copy)]
+enum pc_Increment
+{
+    Next,  // 2 needs to be added to the program counter
+    Skip,  // 4 needs to be added to the program counter
+    Jump   // The instruction's funtion has set the pc to the needed value
 }
 
 impl Chip8
@@ -271,6 +281,7 @@ impl Chip8
     ///! Fully executes one instruction. Automatically increments the program counter as needed.
     pub fn execute(&mut self)
     {
+        let mut pc_op: pc_Increment = pc_Increment::Jump;
         match self.device_state
         {
             CpuState::WaitingForKeypress => { self.check_for_new_key_pressed(); },
@@ -282,7 +293,7 @@ impl Chip8
                 let nibble0: u8 =  self.memory[(self.program_counter as usize) + 1] & 0x0F;
 
                 //Decode the current instruction then execute the instruction.
-                match (nibble3, nibble2, nibble1, nibble0)
+                pc_op = match (nibble3, nibble2, nibble1, nibble0)
                 {
                     (0x0, 0x0, 0xE, 0x0) => self.opcode_CLS       (), //t
                     (0x0, 0x0, 0xE, 0xE) => self.opcode_RET       (), //t
@@ -319,46 +330,43 @@ impl Chip8
                     (0xF,   _, 0x3, 0x3) => self.opcode_LD_B_VX   (nibble2),
                     (0xF,   _, 0x5, 0x5) => self.opcode_LD_iIi_VX (nibble2),
                     (0xF,   _, 0x6, 0x5) => self.opcode_LD_VX_iIi (nibble2),
-                    (  _,   _,   _,   _) => ()
-                }
-
-                if self.program_counter >= 4096
-                {
-                    self.program_counter %= 4096;
+                    (  _,   _,   _,   _) => (pc_Increment::Next)
                 }
             }
         }
-    }
 
+        //Increment the program counter as previously indicated by the instruction
+        match pc_op
+        {
+            pc_Increment::Next => self. program_counter = (self.program_counter + 2) % 4096,
+            pc_Increment::Skip => self. program_counter = (self.program_counter + 4) % 4096,
+            _ => ()
+        }
+    }
 
     //Function for execution of CLS opcode. Clears the screen.
     #[allow(non_snake_case)]
-    fn opcode_CLS(&mut self)
+    fn opcode_CLS(&mut self) -> pc_Increment
     {
         for i in 0..(64 * 32) 
         {
             self.screen[i] = PixelState::Unlit
         }
-        self.program_counter += 2;
-        self.tick_delay += 1;
 
-        return;
+        pc_Increment::Next
     }
 
     #[allow(non_snake_case)]
-    fn opcode_SYS(&mut self)
+    fn opcode_SYS(&mut self) -> pc_Increment
     {
-        self.program_counter += 2;
-        self.tick_delay += 1;
-
-        return;
+        pc_Increment::Next
     }
 
     #[allow(non_snake_case)]
-    fn opcode_RET(&mut self)
+    fn opcode_RET(&mut self) -> pc_Increment
     {
-        //println!("Boing!");
         self.program_counter = self.stack[self.stack_pointer as usize] + 2;
+
         if self.stack_pointer == 0
         {
             self.stack_pointer = 0xF;
@@ -368,27 +376,19 @@ impl Chip8
             self.stack_pointer -= 1;
         }
 
-        if self.program_counter >= 4096
-        {
-            self.program_counter %= 4096;
-        }
-
-        self.tick_delay += 1;
-
-        return;
+        pc_Increment::Jump
     }
 
     #[allow(non_snake_case)]
-    fn opcode_JP(&mut self, n: u8, nn: u8)
+    fn opcode_JP(&mut self, n: u8, nn: u8) -> pc_Increment
     {
         self.program_counter = ((n as u16) << 8) | (nn as u16);  
-        self.tick_delay += 1;
 
-        return;
+        pc_Increment::Jump
     }
 
     #[allow(non_snake_case)]
-    fn opcode_CALL(&mut self, n: u8, nn: u8)
+    fn opcode_CALL(&mut self, n: u8, nn: u8) -> pc_Increment
     {
         //println!("JP: {} \t{}", n, nn);
         self.stack_pointer += 1;
@@ -398,131 +398,109 @@ impl Chip8
         }
         self.stack[self.stack_pointer as usize] = self.program_counter;
         self.program_counter = ((n as u16) << 8) | (nn as u16);
-        self.tick_delay += 1;
 
-        return;
+        pc_Increment::Jump
     }
 
     //TODO: bounds check for general_registers
     #[allow(non_snake_case)]
-    fn opcode_SE_VX(&mut self, vx: u8, kk: u8)
+    fn opcode_SE_VX(&mut self, vx: u8, kk: u8) -> pc_Increment
     {
         if kk == self.general_registers[vx as usize]
         {
-            self.program_counter += 4; // Skips next instruction
+            pc_Increment::Jump // Skip the next instruction
         }
         else
         {
-            self.program_counter += 2;
+            pc_Increment::Next
         }
-        self.tick_delay += 1;
-
-        return;
     }
 
     //TODO: bounds check for general_registers
     #[allow(non_snake_case)]
-    fn opcode_SNE_VX(&mut self, vx: u8, kk: u8)
+    fn opcode_SNE_VX(&mut self, vx: u8, kk: u8) -> pc_Increment
     {
         if kk != self.general_registers[vx as usize]
         {
-            self.program_counter += 4; // Skips next instruction
+            pc_Increment::Jump // Skip the next instruction
         }
         else
         {
-            self.program_counter += 2;
+            pc_Increment::Next
         }
-        self.tick_delay += 1;
-
-        return;
     }
 
     //TODO: bounds check for general_registers
     #[allow(non_snake_case)]
-    fn opcode_SE_VX_VY(&mut self, vx: u8, vy: u8)
+    fn opcode_SE_VX_VY(&mut self, vx: u8, vy: u8) -> pc_Increment
     {
         if self.general_registers[vx as usize] == self.general_registers[vy as usize]
         {
-            self.program_counter += 4; // Skips next instruction
+            pc_Increment::Jump // Skip the next instruction
         }
         else
         {
-            self.program_counter += 2;
+            pc_Increment::Next
         }
-        self.tick_delay += 1;
-
-        return;
     }
 
     //TODO: bounds check for general_registers
     #[allow(non_snake_case)]
-    fn opcode_LD_VX(&mut self, vx: u8, kk: u8)
+    fn opcode_LD_VX(&mut self, vx: u8, kk: u8) -> pc_Increment
     {
         self.general_registers[vx as usize] = kk;
-        self.program_counter += 2;
-        self.tick_delay += 1;
 
-        return;
+        pc_Increment::Next
     }
 
     //TODO: bounds check for general_registers
     #[allow(non_snake_case)]
-    fn opcode_ADD_VX(&mut self, vx: u8, kk: u8)
+    fn opcode_ADD_VX(&mut self, vx: u8, kk: u8) -> pc_Increment
     {
         self.general_registers[vx as usize] = self.general_registers[vx as usize].wrapping_add(kk);
-        self.program_counter += 2;
-        self.tick_delay += 1;
 
-        return;
+        pc_Increment::Next
     }
 
     //TODO: bounds check for general_registers
     #[allow(non_snake_case)]
-    fn opcode_LD_VX_VY(&mut self, vx: u8, vy: u8)
+    fn opcode_LD_VX_VY(&mut self, vx: u8, vy: u8) -> pc_Increment
     {
         self.general_registers[vx as usize] = self.general_registers[vy as usize];
-        self.program_counter += 2;
-        self.tick_delay += 1;
 
-        return;
+        pc_Increment::Next
     }
 
     //TODO: bounds check for general_registers
     #[allow(non_snake_case)]
-    fn opcode_OR_VX_VY(&mut self, vx: u8, vy: u8)
+    fn opcode_OR_VX_VY(&mut self, vx: u8, vy: u8) -> pc_Increment
     {
         self.general_registers[vx as usize] |= self.general_registers[vy as usize];
-        self.program_counter += 2;
-        self.tick_delay += 1;
 
-        return;
+        pc_Increment::Next
     }
 
     //TODO: bounds check for general_registers
     #[allow(non_snake_case)]
-    fn opcode_AND_VX_VY(&mut self, vx: u8, vy: u8)
+    fn opcode_AND_VX_VY(&mut self, vx: u8, vy: u8) -> pc_Increment
     {
         self.general_registers[vx as usize] &= self.general_registers[vy as usize];
-        self.program_counter += 2;
-        self.tick_delay += 1;
 
-        return;
+        pc_Increment::Next
     }
 
     //TODO: bounds check for general_registers
     #[allow(non_snake_case)]
-    fn opcode_XOR_VX_VY(&mut self, vx: u8, vy: u8)
+    fn opcode_XOR_VX_VY(&mut self, vx: u8, vy: u8) -> pc_Increment
     {
         self.general_registers[vx as usize] ^= self.general_registers[vy as usize];
-        self.program_counter += 2;
-        self.tick_delay += 1;
 
-        return;
+        pc_Increment::Next
     }
 
     //TODO: bounds check for general_registers
     #[allow(non_snake_case)]
-    fn opcode_ADD_VX_VY(&mut self, vx: u8, vy: u8)
+    fn opcode_ADD_VX_VY(&mut self, vx: u8, vy: u8) -> pc_Increment
     {
         if (self.general_registers[vx as usize] as u16) + (self.general_registers[vy as usize] as u16) > 0xFF
         {
@@ -533,16 +511,13 @@ impl Chip8
             self.general_registers[0xF] = 0;
         }
         self.general_registers[vx as usize] = self.general_registers[vx as usize].wrapping_sub(self.general_registers[vy as usize]);
-        
-        self.program_counter += 2;
-        self.tick_delay += 1;
 
-        return;
+        pc_Increment::Next
     }
 
     //TODO: bounds check for general_registers
     #[allow(non_snake_case)]
-    fn opcode_SUB_VX_VY(&mut self, vx: u8, vy: u8)
+    fn opcode_SUB_VX_VY(&mut self, vx: u8, vy: u8) -> pc_Increment
     {
         if (self.general_registers[vx as usize] as i16) - (self.general_registers[vy as usize] as i16) < 0
         {
@@ -555,15 +530,12 @@ impl Chip8
 
         self.general_registers[vx as usize] = self.general_registers[vx as usize].wrapping_sub(self.general_registers[vy as usize]);
         
-        self.program_counter += 2;
-        self.tick_delay += 1;
-
-        return;
+        pc_Increment::Next
     }
 
     //TODO: bounds check for general_registers
     #[allow(non_snake_case)]
-    fn opcode_SHR_VX(&mut self, vx: u8)
+    fn opcode_SHR_VX(&mut self, vx: u8) -> pc_Increment
     {
         if (self.general_registers[vx as usize] & 1) != 0
         {
@@ -574,16 +546,13 @@ impl Chip8
             self.general_registers[0xF] = 0;
         }
         self.general_registers[vx as usize] >>= 1;
-        
-        self.program_counter += 2;
-        self.tick_delay += 1;
 
-        return;
+        pc_Increment::Next
     }
 
     //TODO: bounds check for general_registers
     #[allow(non_snake_case)]
-    fn opcode_SUBN_VX_VY(&mut self, vx: u8, vy: u8)
+    fn opcode_SUBN_VX_VY(&mut self, vx: u8, vy: u8) -> pc_Increment
     {
         if (self.general_registers[vy as usize] as i16) - (self.general_registers[vx as usize] as i16) < 0
         {
@@ -594,16 +563,13 @@ impl Chip8
             self.general_registers[0xF] = 1;
         }
         self.general_registers[vx as usize] = self.general_registers[vx as usize].wrapping_sub(self.general_registers[vy as usize]);
-        
-        self.program_counter += 2;
-        self.tick_delay += 1;
 
-        return;
+        pc_Increment::Next
     }
 
     //TODO: bounds check for general_registers
     #[allow(non_snake_case)]
-    fn opcode_SHL_VX(&mut self, vx: u8)
+    fn opcode_SHL_VX(&mut self, vx: u8) -> pc_Increment
     {
         if (self.general_registers[vx as usize] & 0b10000000) == 0
         {
@@ -616,66 +582,52 @@ impl Chip8
 
         self.general_registers[vx as usize] <<= 2;
 
-        self.program_counter += 2;
-        self.tick_delay += 1;
-
-        return;
+        pc_Increment::Next
     }
 
     //TODO: bounds check for general_registers
     #[allow(non_snake_case)]
-    fn opcode_SNE_VX_VY(&mut self, vx: u8, vy: u8)
+    fn opcode_SNE_VX_VY(&mut self, vx: u8, vy: u8) -> pc_Increment
     {
         if self.general_registers[vx as usize] != self.general_registers[vy as usize]
         {
-            self.program_counter += 4; // Skips next instruction
+            pc_Increment::Skip // Skips next instruction
         }
         else
         {
-            self.program_counter += 2;
+            pc_Increment::Next
         }
-        self.tick_delay += 1;
-
-        return;
     }
 
     #[allow(non_snake_case)]
-    fn opcode_LD_I(&mut self, n: u8, nn: u8)
+    fn opcode_LD_I(&mut self, n: u8, nn: u8) -> pc_Increment
     {
         self.index = ((n as u16) << 8) | (nn as u16);
 
-        self.program_counter += 2;
-        self.tick_delay += 1;
-
-        return;
+        pc_Increment::Next
     }
 
     #[allow(non_snake_case)]
-    fn opcode_JP_V0(&mut self, n: u8, nn: u8)
+    fn opcode_JP_V0(&mut self, n: u8, nn: u8) -> pc_Increment
     {
-        self.program_counter = (((n as u16) << 8) | (nn as u16)) + (self.general_registers[0] as u16);
+        self.program_counter = ((((n as u16) << 8) | (nn as u16)) + (self.general_registers[0] as u16)) % 4096;
 
-        self.tick_delay += 1;
-
-        return;
+        pc_Increment::Jump
     }
 
     //TODO: bounds check for general_registers
     #[allow(non_snake_case)]
-    fn opcode_RND_VX(&mut self, vx: u8, kk: u8)
+    fn opcode_RND_VX(&mut self, vx: u8, kk: u8) -> pc_Increment
     {
         let mut rng = rand::thread_rng();
         self.general_registers[vx as usize] = kk & rng.gen::<u8>();
 
-        self.program_counter += 2;
-        self.tick_delay += 1;
-
-        return;
+        pc_Increment::Next
     }
 
     //TODO: bounds check for general_registers, index, memory, sprite wrapping
     #[allow(non_snake_case)]
-    fn opcode_DRW_VX_VY(&mut self, vx: u8, vy: u8, n: u8)
+    fn opcode_DRW_VX_VY(&mut self, vx: u8, vy: u8, n: u8) -> pc_Increment
     {
         let vx = vx % 64;
         let vy = vy % 32;
@@ -721,151 +673,116 @@ impl Chip8
             }
         }
 
-        self.program_counter += 2;
-        self.tick_delay += 1;
-
-        return;
+        pc_Increment::Next
     }
 
     //TODO: bounds check for keypad
     #[allow(non_snake_case)]
-    fn opcode_SKP_VX(&mut self, vx: u8)
+    fn opcode_SKP_VX(&mut self, vx: u8) -> pc_Increment
     {
         if vx > 0xF
         {
-            self.program_counter += 2;
-            return;
+            return pc_Increment::Next;
         }
 
         if self.keypad[self.general_registers[vx as usize] as usize] == KeyState::Pressed
         {
-            self.program_counter += 4;
+            pc_Increment::Skip
         }
         else
         {
-            self.program_counter += 2;
+            pc_Increment::Next
         }
-
-        self.tick_delay += 1;
-
-        return;
     }
 
     //TODO: bounds check for keypad
     #[allow(non_snake_case)]
-    fn opcode_SKNP_VX(&mut self, vx: u8)
+    fn opcode_SKNP_VX(&mut self, vx: u8) -> pc_Increment
     {
         if vx > 0xF
         {
-            self.program_counter += 2;
-            return;
+            return pc_Increment::Next;
         }
 
         if self.keypad[vx as usize] == KeyState::Unpressed
         {
-            self.program_counter += 4;
+            pc_Increment::Skip
         }
         else
         {
-            self.program_counter += 2;
+            pc_Increment::Next
         }
-
-        self.tick_delay += 1;
-
-        return;
     }
 
     //TODO: bounds check for keypad
     #[allow(non_snake_case)]
-    fn opcode_LD_VX_DT(&mut self, vx: u8)
+    fn opcode_LD_VX_DT(&mut self, vx: u8) -> pc_Increment
     {
         self.general_registers[vx as usize] = self.timer_delay.ceil() as u8;
 
-        self.program_counter += 2;
-        self.tick_delay += 1;
-
-        return;
+        pc_Increment::Next
     }
 
     //TODO: bounds check for general_registers
     #[allow(non_snake_case)]
-    fn opcode_LD_VX_K(&mut self, vx: u8)
+    fn opcode_LD_VX_K(&mut self, vx: u8) -> pc_Increment
     {
         self.temp_vx = vx;
         self.device_state = CpuState::WaitingForKeypress;
         self.save_keypad();
 
-        return;
+        pc_Increment::Jump
     }
 
     //Executed after a keypress is performed
     //TODO: bounds check for general_registers
     #[allow(non_snake_case)]
-    fn opcode_LD_VX_K_CONT(&mut self, vx: u8, pressed_key: u8)
+    fn opcode_LD_VX_K_CONT(&mut self, vx: u8, pressed_key: u8) -> pc_Increment
     {
         self.general_registers[vx as usize] = pressed_key;
-        //println!("reg: {}     key: {}", vx, pressed_key);
-        self.program_counter += 2;
-        self.tick_delay += 1;
 
-        if self.program_counter >= 4096
-        {
-            self.program_counter %= 4096;
-        }
-
-        return;
+        pc_Increment::Next
     }
 
     //TODO: bounds check for keypad
     #[allow(non_snake_case)]
-    fn opcode_LD_DT_VX(&mut self, vx: u8)
+    fn opcode_LD_DT_VX(&mut self, vx: u8) -> pc_Increment
     {
         self.timer_delay = self.general_registers[vx as usize] as f32;
 
-        self.program_counter += 2;
-        self.tick_delay += 1;
-
-        return;
+        pc_Increment::Next
     }
 
     //TODO: bounds check for keypad
     #[allow(non_snake_case)]
-    fn opcode_LD_ST_VX(&mut self, vx: u8)
+    fn opcode_LD_ST_VX(&mut self, vx: u8) -> pc_Increment
     {
         self.buzzer_delay = self.general_registers[vx as usize] as f32;
 
-        self.program_counter += 2;
-        self.tick_delay += 1;
-
-        return;
+        pc_Increment::Next
     }
 
     //TODO: bounds check for general_registers
     #[allow(non_snake_case)]
-    fn opcode_ADD_I_VX(&mut self, vx: u8)
+    fn opcode_ADD_I_VX(&mut self, vx: u8) -> pc_Increment
     {
         self.index = self.index.wrapping_add(self.general_registers[vx as usize] as u16);
 
-        self.program_counter += 2;
-        self.tick_delay += 1;
-
-        return;
+        pc_Increment::Next
     }
 
     //TODO: bounds check for general_registers
     #[allow(non_snake_case)]
-    fn opcode_LD_F_VX(&mut self, vx: u8)
+    fn opcode_LD_F_VX(&mut self, vx: u8) -> pc_Increment
     {
         self.index = 5 * (self.general_registers[vx as usize] as u16);
 
-        self.program_counter += 2;
-
-        return;
+        pc_Increment::Next
     }
 
     //TODO: bounds check for general_registers
     #[allow(non_snake_case)]
-    fn opcode_LD_B_VX(&mut self, vx: u8)
+    fn opcode_LD_B_VX(&mut self, vx: u8) -> pc_Increment
     {
         let value: u8    = self.general_registers[vx as usize];
         let mut result: [u8; 3] = [0,0,0];
@@ -883,14 +800,12 @@ impl Chip8
             self.memory[(self.index + i) as usize] = result[i as usize];
         }
 
-        self.program_counter += 2;
-
-        return;
+        pc_Increment::Next
     }
 
     //TODO: bounds check for general_registers
     #[allow(non_snake_case)]
-    fn opcode_LD_iIi_VX(&mut self, vx: u8)
+    fn opcode_LD_iIi_VX(&mut self, vx: u8) -> pc_Increment
     {
         for register_number in 0..=vx
         {
@@ -902,14 +817,12 @@ impl Chip8
             self.memory[(self.index + (register_number as u16)) as usize] = self.general_registers[register_number as usize];
         }
 
-        self.program_counter += 2;
-
-        return;
+        pc_Increment::Next
     }
 
     //TODO: bounds check for general_registers
     #[allow(non_snake_case)]
-    fn opcode_LD_VX_iIi(&mut self, vx: u8)
+    fn opcode_LD_VX_iIi(&mut self, vx: u8) -> pc_Increment
     {
         for register_number in 0..=vx
         {
@@ -921,9 +834,6 @@ impl Chip8
             self.general_registers[register_number as usize] = self.memory[(self.index + (register_number as u16)) as usize];
         }
 
-        self.program_counter += 2;
-
-        return;
+        pc_Increment::Next
     }
-
 }
